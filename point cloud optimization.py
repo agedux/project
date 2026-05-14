@@ -47,8 +47,8 @@ def add_defects(pcd, noise_level_percentage, num_holes=5):
     else:
         noise_indices_random = np.array([], dtype=int)
 
-    # 合併所有噪點的索引，作為後續評估的「真實答案」
-    ground_truth_noise_indices = np.union1d(noise_indices_gaussian, noise_indices_random)
+    # Stage 1 只該砍隨機離群點（Gaussian 擾動點留給 Stage 2 修正）
+    ground_truth_noise_indices = noise_indices_random.copy()
     
     noisy_pcd.points = o3d.utility.Vector3dVector(points)
 
@@ -89,14 +89,21 @@ def add_defects(pcd, noise_level_percentage, num_holes=5):
 
         # 從點雲中刪除所有被標記為移除的點
         unique_indices_to_remove = np.unique(all_indices_to_remove)
-        
-        # 創建一個遮罩，標記要被移除的點
         points_to_keep_mask = np.ones(len(points_for_holes), dtype=bool)
         points_to_keep_mask[unique_indices_to_remove] = False
-        
-        # 根據遮罩選取要保留的點，從而移除孔洞區域的點
-        noisy_pcd = noisy_pcd.select_by_index(np.where(points_to_keep_mask)[0])
-    
+        kept_old_indices = np.where(points_to_keep_mask)[0]
+
+        # select_by_index 會重排 → ground truth 索引要 remap
+        noisy_pcd = noisy_pcd.select_by_index(kept_old_indices)
+
+        # 舊索引 → 新索引 mapping
+        old_to_new = {old: new for new, old in enumerate(kept_old_indices)}
+        remapped = set()
+        for idx in ground_truth_noise_indices:
+            if idx in old_to_new:
+                remapped.add(old_to_new[idx])
+        ground_truth_noise_indices = np.array(sorted(remapped))
+
     return noisy_pcd, ground_truth_noise_indices
 
 def calculate_denoising_metrics(total_points_in_noisy_pcd, ground_truth_noise_indices, denoised_inlier_indices):
@@ -293,7 +300,7 @@ def main():
     
     # --- 載入資料 ---
     # 請在此處設置要載入的點雲檔案路徑
-    file_path = "rawdata/armadillo.ply" 
+    file_path = "rawdata/bunny.ply" 
     
     if not os.path.exists(file_path):
         print(f"錯誤: 檔案 '{file_path}' 不存在。")
@@ -371,7 +378,7 @@ def main():
         
         # --- 步驟 3.1: 移除離群點 ---
         print("1. 正在移除離群點...")
-        pcd_outliers_removed, inlier_indices_denoised = remove_outliers(pcd_noisy, octree_max_depth=10, k=15, threshold_multiplier=0.5)
+        pcd_outliers_removed, inlier_indices_denoised = remove_outliers(pcd_noisy, octree_max_depth=10, k=15, threshold_multiplier=0.85)
         
         calculate_denoising_metrics(len(pcd_noisy.points), noise_indices, inlier_indices_denoised)
         pcd_outliers_removed.paint_uniform_color([0, 1, 0]) # 綠色
